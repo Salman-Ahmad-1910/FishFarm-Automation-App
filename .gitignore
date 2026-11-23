@@ -46,3 +46,17 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# Release signing and Firebase config (never commit these)
+android/key.properties
+**/*.jks
+**/*.keystore
+android/app/google-services.json
+.release-secrets.local
+_to_delete/
+/android/build/
+
+# Gradle output
+android/build/
+android/.gradle/
+_to_delete/

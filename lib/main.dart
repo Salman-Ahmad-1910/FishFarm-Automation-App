@@ -3,8 +3,15 @@ import 'package:flutter/material.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/limits_screen.dart';
 import 'screens/temperature_screen.dart';
+import 'services/alarm_settings.dart';
+import 'services/push_service.dart';
+import 'services/update_service.dart';
+import 'widgets/alarm_controls.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await AlarmSettings.instance.load();
+  await PushService.init();
   runApp(const FishFarmApp());
 }
 
@@ -25,6 +32,11 @@ class FishFarmApp extends StatelessWidget {
           surface: Color(0xFF172633),
         ),
       ),
+      builder: (context, child) => MediaQuery.withClampedTextScaling(
+        minScaleFactor: 0.85,
+        maxScaleFactor: 1.15,
+        child: child ?? const SizedBox.shrink(),
+      ),
       home: const HomeShell(),
     );
   }
@@ -41,15 +53,34 @@ class _HomeShellState extends State<HomeShell> {
   int _index = 0;
 
   @override
+  void initState() {
+    super.initState();
+    // Quietly look for a new version once, shortly after the app opens.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) UpdateService.check(context, silent: true);
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: IndexedStack(
-        index: _index,
-        children: const [
-          DashboardScreen(),
-          TemperatureScreen(),
-          LimitsScreen(),
-        ],
+      body: SafeArea(
+        bottom: false,
+        child: Column(
+          children: [
+            const MasterAlarmBar(),
+            Expanded(
+              child: IndexedStack(
+                index: _index,
+                children: const [
+                  DashboardScreen(),
+                  TemperatureScreen(),
+                  LimitsScreen(),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,

@@ -3,6 +3,8 @@ import 'package:intl/intl.dart';
 
 import '../models/pressure_reading.dart';
 import '../models/sensor_limit.dart';
+import 'alarm_controls.dart';
+import 'common_ui.dart';
 import 'pressure_gauge.dart';
 
 class SensorCard extends StatelessWidget {
@@ -20,24 +22,20 @@ class SensorCard extends StatelessWidget {
   Color get _statusColor {
     switch (reading.alarmStatus) {
       case 'NORMAL':
-        return const Color(0xFF8BC34A);
+        return AppColors.green;
       case 'HIGH_PRESSURE':
-        return const Color(0xFFF44336);
+        return AppColors.red;
       case 'LOW_PRESSURE':
-        return const Color(0xFFFF9800);
-      case 'SENSOR_OFFLINE':
-        return const Color(0xFF808B96);
+        return AppColors.orange;
       case 'NOT_CONFIGURED':
-        return const Color(0xFF536FC0);
+        return AppColors.blue;
       default:
-        return const Color(0xFF808B96);
+        return AppColors.muted;
     }
   }
 
   String get _statusLabel {
     switch (reading.alarmStatus) {
-      case 'NORMAL':
-        return 'NORMAL';
       case 'HIGH_PRESSURE':
         return 'HIGH PRESSURE';
       case 'LOW_PRESSURE':
@@ -58,54 +56,72 @@ class SensorCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isAlarm = reading.alarmStatus == 'HIGH_PRESSURE' ||
+    final isLimitAlarm = reading.alarmStatus == 'HIGH_PRESSURE' ||
         reading.alarmStatus == 'LOW_PRESSURE';
+    final online = reading.isOnline;
+    final onlineColor = online ? AppColors.green : AppColors.muted;
+    final hasLimits = limit != null && limit!.min != null && limit!.max != null;
 
-    return Container(
-      decoration: BoxDecoration(
-        color: const Color(0xFF172633),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: const Color(0xFF2A3F52)),
-      ),
+    return AppCard(
+      radius: 18,
       padding: const EdgeInsets.all(16),
+      borderColor:
+          isLimitAlarm ? _statusColor.withValues(alpha: 0.7) : AppColors.border,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Text(
-                reading.displayName.toUpperCase(),
-                style: const TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFFAAB8C4),
-                  letterSpacing: 1.1,
+              Expanded(
+                child: Text(
+                  reading.displayName.toUpperCase(),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.label,
+                    letterSpacing: 1.1,
+                  ),
                 ),
               ),
-              const Spacer(),
-              _StatusDot(color: reading.isOnline ? const Color(0xFF8BC34A) : const Color(0xFF808B96)),
+              Container(
+                width: 8,
+                height: 8,
+                decoration:
+                    BoxDecoration(color: onlineColor, shape: BoxShape.circle),
+              ),
               const SizedBox(width: 6),
               Text(
-                reading.isOnline ? 'ONLINE' : 'OFFLINE',
+                online ? 'ONLINE' : 'OFFLINE',
                 style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w700,
-                  color: reading.isOnline
-                      ? const Color(0xFF8BC34A)
-                      : const Color(0xFF808B96),
+                  color: onlineColor,
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 4),
-          Text(
-            reading.sensorId,
-            style: const TextStyle(
-              fontSize: 11,
-              color: Color(0xFF808B96),
-            ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  reading.sensorId,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 11, color: AppColors.muted),
+                ),
+              ),
+              const Text(
+                'Alarm',
+                style: TextStyle(fontSize: 11, color: AppColors.label),
+              ),
+              const SizedBox(width: 6),
+              AlarmSwitch(sensorId: reading.sensorId),
+            ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
           Center(
             child: PressureGauge(
               value: reading.pressureKpa ?? 0,
@@ -118,7 +134,7 @@ class SensorCard extends StatelessWidget {
               reading.unit,
               style: const TextStyle(
                 fontSize: 12,
-                color: Color(0xFFAAB8C4),
+                color: AppColors.label,
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -146,17 +162,15 @@ class SensorCard extends StatelessWidget {
           const SizedBox(height: 8),
           Center(
             child: Text(
-              limit != null && limit!.min != null && limit!.max != null
-                  ? 'Alarm limits: ${limit!.min!.toStringAsFixed(1)} – '
+              hasLimits
+                  ? 'Alarm limits: ${limit!.min!.toStringAsFixed(1)} - '
                       '${limit!.max!.toStringAsFixed(1)} ${reading.unit}'
                   : 'Alarm limits: not set',
-              style: const TextStyle(
-                fontSize: 11,
-                color: Color(0xFFAAB8C4),
-              ),
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 11, color: AppColors.label),
             ),
           ),
-          if (isAlarm) ...[
+          if (isLimitAlarm) ...[
             const SizedBox(height: 10),
             Container(
               width: double.infinity,
@@ -179,11 +193,11 @@ class SensorCard extends StatelessWidget {
           ],
           if (reading.alarmStatus == 'SENSOR_OFFLINE') ...[
             const SizedBox(height: 10),
-            Text(
+            const Text(
               'Sensor offline - no data received.',
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 12,
-                color: Color(0xFF808B96),
+                color: AppColors.muted,
                 fontWeight: FontWeight.w500,
               ),
             ),
@@ -194,7 +208,7 @@ class SensorCard extends StatelessWidget {
               'Thresholds not configured.',
               style: TextStyle(
                 fontSize: 12,
-                color: Color(0xFF536FC0),
+                color: AppColors.blue,
                 fontWeight: FontWeight.w500,
               ),
             ),
@@ -202,10 +216,7 @@ class SensorCard extends StatelessWidget {
           const SizedBox(height: 10),
           Text(
             'Last update: ${_formatTime(reading.lastSeen)}',
-            style: const TextStyle(
-              fontSize: 11,
-              color: Color(0xFF808B96),
-            ),
+            style: const TextStyle(fontSize: 11, color: AppColors.muted),
           ),
           if (stale)
             const Text(
@@ -213,25 +224,11 @@ class SensorCard extends StatelessWidget {
               style: TextStyle(
                 fontSize: 11,
                 fontWeight: FontWeight.w800,
-                color: Color(0xFFF44336),
+                color: AppColors.red,
               ),
             ),
         ],
       ),
-    );
-  }
-}
-
-class _StatusDot extends StatelessWidget {
-  final Color color;
-  const _StatusDot({required this.color});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 8,
-      height: 8,
-      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
     );
   }
 }

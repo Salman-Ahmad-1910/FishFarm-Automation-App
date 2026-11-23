@@ -1,57 +1,59 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
 import '../models/temperature_reading.dart';
+import '../services/alarm_notifier.dart';
+import '../services/alarm_settings.dart';
 import '../services/temperature_api_service.dart';
+import '../widgets/alarm_controls.dart';
+import '../widgets/common_ui.dart';
 
 const int _sensorCount = 19;
 
-const Color _cardBg = Color(0xFF172633);
-const Color _cardBorder = Color(0xFF2A3F52);
-const Color _muted = Color(0xFF808B96);
-const Color _label = Color(0xFFAAB8C4);
-const Color _green = Color(0xFF8BC34A);
-const Color _red = Color(0xFFF44336);
-const Color _orange = Color(0xFFFF9800);
-const Color _blue = Color(0xFF536FC0);
+final List<String> _sensorIds = List<String>.generate(
+  _sensorCount,
+  (i) => 'temperature_sensor_${(i + 1).toString().padLeft(2, '0')}',
+);
 
 Color _statusColor(String status) {
   switch (status) {
     case 'NORMAL':
-      return _green;
+      return AppColors.green;
     case 'HIGH_TEMPERATURE':
-      return _red;
+      return AppColors.red;
     case 'LOW_TEMPERATURE':
-      return _orange;
+      return AppColors.orange;
     case 'NOT_CONFIGURED':
-      return _blue;
+      return AppColors.blue;
     default:
-      return _muted;
+      return AppColors.muted;
   }
 }
 
 String _statusLabel(String status) {
   switch (status) {
     case 'HIGH_TEMPERATURE':
-      return 'HIGH TEMPERATURE';
+      return 'HIGH TEMP';
     case 'LOW_TEMPERATURE':
-      return 'LOW TEMPERATURE';
+      return 'LOW TEMP';
     case 'SENSOR_OFFLINE':
-      return 'SENSOR OFFLINE';
+      return 'OFFLINE';
     case 'NOT_CONFIGURED':
-      return 'NOT CONFIGURED';
+      return 'NOT SET';
     default:
       return status;
   }
 }
 
-bool _isAlarm(String status) =>
-    status == 'HIGH_TEMPERATURE' ||
-    status == 'LOW_TEMPERATURE' ||
-    status == 'SENSOR_OFFLINE';
+/// A sensor that never sent any data is simply not connected, so it does not
+/// alarm. A sensor that reported before and then went silent does.
+bool _isAlarm(TemperatureReading r) {
+  final s = r.alarmStatus;
+  if (s == 'HIGH_TEMPERATURE' || s == 'LOW_TEMPERATURE') return true;
+  return s == 'SENSOR_OFFLINE' && r.lastSeen != null;
+}
 
 class TemperatureScreen extends StatefulWidget {
   const TemperatureScreen({super.key});
@@ -69,10 +71,8 @@ class _TemperatureScreenState extends State<TemperatureScreen>
   bool _initialLoading = true;
   bool _isRefreshing = false;
   String? _errorMessage;
-  int _activeAlarmCount = 0;
   DateTime? _lastServerUpdate;
   bool _isStale = false;
-  bool _hadAlarm = false;
 
   Timer? _refreshTimer;
 
@@ -80,6 +80,7 @@ class _TemperatureScreenState extends State<TemperatureScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    AlarmSettings.instance.addListener(_syncAlarm);
     _fetchData();
     _refreshTimer =
         Timer.periodic(const Duration(seconds: 4), (_) => _fetchData());
@@ -88,6 +89,7 @@ class _TemperatureScreenState extends State<TemperatureScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    AlarmSettings.instance.removeListener(_syncAlarm);
     _refreshTimer?.cancel();
     super.dispose();
   }
@@ -106,6 +108,20 @@ class _TemperatureScreenState extends State<TemperatureScreen>
     }
   }
 
+  /// Rings for sensors that are in alarm AND have their alarm switched on
+  /// (master switch and sensor switch). Stops when none are left.
+  void _syncAlarm() {
+    final list = _readings;
+    if (list == null) return;
+    final alarming = <String>[
+      for (final r in list)
+        if (_isAlarm(r) &&
+            AlarmSettings.instance.sensorActive(r.sensorId))
+          r.displayName,
+    ];
+    AlarmNotifier.sync('temperature', alarming);
+  }
+
   Future<void> _fetchData() async {
     if (_isRefreshing) return;
     _isRefreshing = true;
@@ -113,31 +129,16 @@ class _TemperatureScreenState extends State<TemperatureScreen>
 
     try {
       final current = await _service.fetchCurrent();
-      ActiveTemperatureAlarmsResponse? alarms;
-      try {
-        alarms = await _service.fetchAlarms();
-      } catch (_) {
-        alarms = null;
-      }
-
       if (!mounted) return;
-      final ordered = _orderedReadings(current.data);
-      final hasAlarm = ordered.any((r) => _isAlarm(r.alarmStatus));
-
-      if (hasAlarm && !_hadAlarm) {
-        SystemSound.play(SystemSoundType.alert);
-      }
-      _hadAlarm = hasAlarm;
+      _readings = _orderedReadings(current.data);
+      _syncAlarm();
 
       setState(() {
-        _readings = ordered;
         _serverConnected = true;
         _errorMessage = null;
         _lastServerUpdate = DateTime.now();
         _isStale = false;
         _initialLoading = false;
-        _activeAlarmCount = alarms?.count ??
-            ordered.where((r) => r.alarmStatus != 'NORMAL').length;
       });
     } catch (e) {
       if (!mounted) return;
@@ -156,10 +157,9 @@ class _TemperatureScreenState extends State<TemperatureScreen>
     final byId = <String, TemperatureReading>{
       for (final r in data) r.sensorId: r,
     };
-    return List<TemperatureReading>.generate(_sensorCount, (i) {
-      final id = 'temperature_sensor_${(i + 1).toString().padLeft(2, '0')}';
-      return byId[id] ?? TemperatureReading.unavailable(id);
-    });
+    return [
+      for (final id in _sensorIds) byId[id] ?? TemperatureReading.unavailable(id),
+    ];
   }
 
   @override
@@ -167,212 +167,67 @@ class _TemperatureScreenState extends State<TemperatureScreen>
     final readings = _readings;
     final onlineCount = readings?.where((r) => r.isOnline).length ?? 0;
     final offlineCount = readings == null ? 0 : readings.length - onlineCount;
+    final alarmCount =
+        readings?.where(_isAlarm).length ?? 0;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF263746),
+      backgroundColor: AppColors.bg,
       body: SafeArea(
         child: RefreshIndicator(
           onRefresh: _fetchData,
-          color: _blue,
+          color: AppColors.blue,
           child: SingleChildScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _Header(
-                  serverConnected: _serverConnected,
-                  isRefreshing: _isRefreshing,
-                  onRefresh: _fetchData,
-                ),
-                const SizedBox(height: 14),
-                if (_errorMessage != null) ...[
-                  _ErrorBanner(message: _errorMessage!),
-                  const SizedBox(height: 14),
+            child: ResponsiveBody(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  AppHeader(
+                    icon: Icons.thermostat_rounded,
+                    subtitle: 'Temperature Monitoring',
+                    serverConnected: _serverConnected,
+                    isRefreshing: _isRefreshing,
+                    onRefresh: _fetchData,
+                  ),
+                  const SizedBox(height: 12),
+                  if (_errorMessage != null) ...[
+                    ErrorBanner(message: _errorMessage!),
+                    const SizedBox(height: 12),
+                  ],
+                  PageAlarmToggle(
+                    label: 'Temperature',
+                    sensorIds: _sensorIds,
+                  ),
+                  const SizedBox(height: 12),
+                  SummaryTiles(
+                    tiles: [
+                      const SummaryTileData(
+                          'Total Sensors', '$_sensorCount', AppColors.blue),
+                      SummaryTileData(
+                          'Online', '$onlineCount', AppColors.green),
+                      SummaryTileData(
+                          'Offline', '$offlineCount', AppColors.muted),
+                      SummaryTileData('Alarms', '$alarmCount', AppColors.red),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  if (_initialLoading || readings == null)
+                    const _LoadingSkeleton()
+                  else
+                    _SensorGrid(readings: readings, stale: _isStale),
+                  const SizedBox(height: 12),
+                  _AlarmSection(readings: readings),
+                  const SizedBox(height: 12),
+                  LastUpdateFooter(
+                    lastServerUpdate: _lastServerUpdate,
+                    isStale: _isStale,
+                  ),
+                  const SizedBox(height: 8),
                 ],
-                _SummaryRow(
-                  total: _sensorCount,
-                  onlineCount: onlineCount,
-                  offlineCount: offlineCount,
-                  activeAlarmCount: _activeAlarmCount,
-                ),
-                const SizedBox(height: 14),
-                if (_initialLoading)
-                  const _LoadingSkeleton()
-                else
-                  _SensorGrid(readings: readings!, stale: _isStale),
-                const SizedBox(height: 14),
-                _AlarmSection(readings: readings),
-                const SizedBox(height: 14),
-                _Footer(lastServerUpdate: _lastServerUpdate, isStale: _isStale),
-              ],
+              ),
             ),
           ),
         ),
-      ),
-    );
-  }
-}
-
-class _Header extends StatelessWidget {
-  final bool serverConnected;
-  final bool isRefreshing;
-  final Future<void> Function() onRefresh;
-
-  const _Header({
-    required this.serverConnected,
-    required this.isRefreshing,
-    required this.onRefresh,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final connColor = serverConnected ? _green : _red;
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: _cardBg,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: _cardBorder),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.thermostat_rounded, color: _blue, size: 26),
-          const SizedBox(width: 10),
-          const Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Fish Farm Monitoring',
-                  style: TextStyle(
-                    fontSize: 17,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.white,
-                  ),
-                ),
-                Text(
-                  'Temperature Monitoring',
-                  style: TextStyle(fontSize: 12, color: _label),
-                ),
-              ],
-            ),
-          ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: BoxDecoration(
-              color: const Color(0xFF203342),
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 8,
-                  height: 8,
-                  decoration:
-                      BoxDecoration(color: connColor, shape: BoxShape.circle),
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  serverConnected ? 'SERVER CONNECTED' : 'SERVER DISCONNECTED',
-                  style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w700,
-                    color: connColor,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          IconButton(
-            onPressed: isRefreshing ? null : () => onRefresh(),
-            icon: isRefreshing
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: _blue,
-                    ),
-                  )
-                : const Icon(Icons.refresh_rounded, color: _label),
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SummaryRow extends StatelessWidget {
-  final int total;
-  final int onlineCount;
-  final int offlineCount;
-  final int activeAlarmCount;
-
-  const _SummaryRow({
-    required this.total,
-    required this.onlineCount,
-    required this.offlineCount,
-    required this.activeAlarmCount,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(child: _Tile(label: 'Total Sensors', value: '$total', color: _blue)),
-        const SizedBox(width: 8),
-        Expanded(child: _Tile(label: 'Online', value: '$onlineCount', color: _green)),
-        const SizedBox(width: 8),
-        Expanded(child: _Tile(label: 'Offline', value: '$offlineCount', color: _muted)),
-        const SizedBox(width: 8),
-        Expanded(child: _Tile(label: 'Alarms', value: '$activeAlarmCount', color: _red)),
-      ],
-    );
-  }
-}
-
-class _Tile extends StatelessWidget {
-  final String label;
-  final String value;
-  final Color color;
-
-  const _Tile({required this.label, required this.value, required this.color});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-      decoration: BoxDecoration(
-        color: _cardBg,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: _cardBorder),
-      ),
-      child: Column(
-        children: [
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.w800,
-              color: color,
-            ),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            label,
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              fontSize: 10,
-              color: _label,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ],
       ),
     );
   }
@@ -389,8 +244,12 @@ class _SensorGrid extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         const spacing = 10.0;
+        const minCardWidth = 165.0;
         final width = constraints.maxWidth;
-        final columns = width >= 900 ? 4 : (width >= 600 ? 3 : 2);
+        final columns = ((width + spacing) / (minCardWidth + spacing))
+            .floor()
+            .clamp(2, 6)
+            .toInt();
         final cardWidth = (width - spacing * (columns - 1)) / columns;
 
         return Wrap(
@@ -424,73 +283,76 @@ class _TemperatureCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final color = _statusColor(reading.alarmStatus);
     final value = reading.temperatureC ?? 0;
+    final limitAlarm = reading.alarmStatus == 'HIGH_TEMPERATURE' ||
+        reading.alarmStatus == 'LOW_TEMPERATURE';
 
-    return Container(
+    return AppCard(
+      radius: 16,
       padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: _cardBg,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: _isAlarm(reading.alarmStatus) && reading.alarmStatus != 'SENSOR_OFFLINE'
-              ? color.withValues(alpha: 0.7)
-              : _cardBorder,
-        ),
-      ),
+      borderColor: limitAlarm ? color.withValues(alpha: 0.7) : AppColors.border,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Expanded(
-                child: Text(
-                  reading.displayName.toUpperCase(),
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                    color: _label,
-                    letterSpacing: 0.8,
-                  ),
-                ),
-              ),
               Container(
                 width: 8,
                 height: 8,
                 decoration: BoxDecoration(
-                  color: reading.isOnline ? _green : _muted,
+                  color: reading.isOnline ? AppColors.green : AppColors.muted,
                   shape: BoxShape.circle,
                 ),
               ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                value.toStringAsFixed(1),
-                style: TextStyle(
-                  fontSize: 30,
-                  fontWeight: FontWeight.w800,
-                  color: reading.isOnline ? Colors.white : _muted,
-                  height: 1,
-                ),
-              ),
-              const SizedBox(width: 4),
-              Padding(
-                padding: const EdgeInsets.only(bottom: 3),
-                child: const Text(
-                  '°C',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: _label,
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  reading.displayName.toUpperCase(),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.label,
+                    letterSpacing: 0.6,
                   ),
                 ),
               ),
+              AlarmSwitch(sensorId: reading.sensorId),
             ],
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 6),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  value.toStringAsFixed(1),
+                  style: TextStyle(
+                    fontSize: 30,
+                    fontWeight: FontWeight.w800,
+                    color: reading.isOnline ? Colors.white : AppColors.muted,
+                    height: 1,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 3),
+                  child: Text(
+                    '°C',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.label,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             decoration: BoxDecoration(
@@ -500,6 +362,8 @@ class _TemperatureCard extends StatelessWidget {
             ),
             child: Text(
               _statusLabel(reading.alarmStatus),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 fontSize: 10,
                 fontWeight: FontWeight.w700,
@@ -510,7 +374,9 @@ class _TemperatureCard extends StatelessWidget {
           const SizedBox(height: 8),
           Text(
             _formatTime(reading.lastSeen),
-            style: const TextStyle(fontSize: 10, color: _muted),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 10, color: AppColors.muted),
           ),
           if (stale)
             const Text(
@@ -518,7 +384,7 @@ class _TemperatureCard extends StatelessWidget {
               style: TextStyle(
                 fontSize: 10,
                 fontWeight: FontWeight.w800,
-                color: _red,
+                color: AppColors.red,
               ),
             ),
         ],
@@ -540,7 +406,12 @@ class _AlarmSection extends StatelessWidget {
             r.alarmStatus == 'HIGH_TEMPERATURE' ||
             r.alarmStatus == 'LOW_TEMPERATURE')
         .toList();
-    final offline = list.where((r) => r.alarmStatus == 'SENSOR_OFFLINE').toList();
+    final offline = list
+        .where((r) => r.alarmStatus == 'SENSOR_OFFLINE' && r.lastSeen != null)
+        .toList();
+    final notConnected = list
+        .where((r) => r.alarmStatus == 'SENSOR_OFFLINE' && r.lastSeen == null)
+        .length;
     final notConfigured =
         list.where((r) => r.alarmStatus == 'NOT_CONFIGURED').length;
 
@@ -584,7 +455,18 @@ class _AlarmSection extends StatelessWidget {
           style: const TextStyle(
             fontSize: 13,
             fontWeight: FontWeight.w600,
-            color: _muted,
+            color: AppColors.muted,
+          ),
+        ),
+      );
+    }
+    if (notConnected > 0) {
+      children.add(
+        Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: Text(
+            '$notConnected sensor(s) not connected yet (no alarm).',
+            style: const TextStyle(fontSize: 12, color: AppColors.muted),
           ),
         ),
       );
@@ -599,7 +481,7 @@ class _AlarmSection extends StatelessWidget {
             style: const TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.w500,
-              color: _blue,
+              color: AppColors.blue,
             ),
           ),
         ),
@@ -612,20 +494,13 @@ class _AlarmSection extends StatelessWidget {
           style: TextStyle(
             fontSize: 14,
             fontWeight: FontWeight.w700,
-            color: _green,
+            color: AppColors.green,
           ),
         ),
       );
     }
 
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: _cardBg,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: _cardBorder),
-      ),
+    return AppCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -634,7 +509,7 @@ class _AlarmSection extends StatelessWidget {
             style: TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.w700,
-              color: _label,
+              color: AppColors.label,
               letterSpacing: 1.1,
             ),
           ),
@@ -646,75 +521,19 @@ class _AlarmSection extends StatelessWidget {
   }
 }
 
-class _ErrorBanner extends StatelessWidget {
-  final String message;
-
-  const _ErrorBanner({required this.message});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: _red.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: _red.withValues(alpha: 0.4)),
-      ),
-      child: Text(
-        'SERVER DISCONNECTED: $message',
-        style: const TextStyle(
-          fontSize: 12,
-          fontWeight: FontWeight.w700,
-          color: _red,
-        ),
-      ),
-    );
-  }
-}
-
 class _LoadingSkeleton extends StatelessWidget {
   const _LoadingSkeleton();
 
   @override
   Widget build(BuildContext context) {
-    return Column(
+    return const Column(
       children: [
-        for (var i = 0; i < 3; i++)
-          Container(
-            height: 110,
-            margin: const EdgeInsets.only(bottom: 10),
-            decoration: BoxDecoration(
-              color: _cardBg,
-              borderRadius: BorderRadius.circular(14),
-            ),
-          ),
+        SkeletonBlock(height: 110),
+        SizedBox(height: 10),
+        SkeletonBlock(height: 110),
+        SizedBox(height: 10),
+        SkeletonBlock(height: 110),
       ],
-    );
-  }
-}
-
-class _Footer extends StatelessWidget {
-  final DateTime? lastServerUpdate;
-  final bool isStale;
-
-  const _Footer({required this.lastServerUpdate, required this.isStale});
-
-  @override
-  Widget build(BuildContext context) {
-    String text;
-    if (lastServerUpdate == null) {
-      text = 'No successful server update yet.';
-    } else {
-      text =
-          'Last server update: ${DateFormat('dd MMM yyyy, HH:mm:ss').format(lastServerUpdate!.toLocal())}';
-      if (isStale) text += ' (stale)';
-    }
-    return Center(
-      child: Text(
-        text,
-        style: const TextStyle(fontSize: 11, color: _muted),
-      ),
     );
   }
 }

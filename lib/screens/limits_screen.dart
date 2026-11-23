@@ -64,7 +64,9 @@ class _LimitsScreenState extends State<LimitsScreen> {
   @override
   Widget build(BuildContext context) {
     final limits = _limits;
-    final pressure = limits?.where((l) => l.isPressure).toList() ?? <SensorLimit>[];
+    final pressure = limits
+            ?.where((l) => l.isPressure && l.sensorId != 'pressure_sensor_02')
+            .toList() ?? <SensorLimit>[];
     final temperature = limits?.where((l) => !l.isPressure).toList() ?? <SensorLimit>[];
 
     return Scaffold(
