@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'screens/dashboard_screen.dart';
+import 'screens/history_screen.dart';
 import 'screens/limits_screen.dart';
 import 'screens/temperature_screen.dart';
 import 'services/alarm_settings.dart';
@@ -51,6 +52,8 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
+  final GlobalKey<HistoryScreenState> _historyKey =
+      GlobalKey<HistoryScreenState>();
 
   @override
   void initState() {
@@ -72,10 +75,11 @@ class _HomeShellState extends State<HomeShell> {
             Expanded(
               child: IndexedStack(
                 index: _index,
-                children: const [
-                  DashboardScreen(),
-                  TemperatureScreen(),
-                  LimitsScreen(),
+                children: [
+                  const DashboardScreen(),
+                  const TemperatureScreen(),
+                  const LimitsScreen(),
+                  HistoryScreen(key: _historyKey),
                 ],
               ),
             ),
@@ -84,7 +88,11 @@ class _HomeShellState extends State<HomeShell> {
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
-        onDestinationSelected: (i) => setState(() => _index = i),
+        onDestinationSelected: (i) {
+          setState(() => _index = i);
+          // Always show fresh history when the tab is opened.
+          if (i == 3) _historyKey.currentState?.refresh();
+        },
         destinations: const [
           NavigationDestination(
             icon: Icon(Icons.speed_rounded),
@@ -97,6 +105,10 @@ class _HomeShellState extends State<HomeShell> {
           NavigationDestination(
             icon: Icon(Icons.tune_rounded),
             label: 'Limits',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.history_rounded),
+            label: 'History',
           ),
         ],
       ),

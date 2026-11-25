@@ -20,6 +20,11 @@ class ApiConfig {
 
   static Uri devicesUri() => Uri.parse('$baseUrl/api/devices');
 
+  static Uri historyReadingsUri(String kind) =>
+      Uri.parse('$baseUrl/api/history/readings?kind=$kind');
+
+  static Uri historyStatusUri() => Uri.parse('$baseUrl/api/history/status');
+
   static const String limitsEndpoint = '/api/limits';
 
   static Uri limitsUri() => Uri.parse('$baseUrl$limitsEndpoint');
