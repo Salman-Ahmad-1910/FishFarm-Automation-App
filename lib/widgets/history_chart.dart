@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
-
+import 'package:intl/intl.dart' hide TextDirection;
 import '../models/history.dart';
 import 'common_ui.dart';
+
 
 const double _padLeft = 44;
 const double _padRight = 10;
